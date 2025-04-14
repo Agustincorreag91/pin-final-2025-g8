@@ -1,0 +1,132 @@
+name: Terraform Destroy Infrastructure
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to destroy (dev, stage, prod)'
+        required: true
+        default: 'dev'
+        type: choice
+        options:
+          - dev
+          - stage
+          - prod
+      confirmation:
+        description: 'Type "DESTROY" to confirm you want to destroy resources'
+        required: true
+        type: string
+
+env:
+  AWS_REGION: us-east-1  # Same region as in deploy workflow
+  TERRAFORM_VERSION: 1.11.4
+
+jobs:
+  terraform-plan-destroy:
+    name: Terraform Plan Destroy
+    runs-on: ubuntu-latest
+    if: ${{ github.event.inputs.confirmation == 'DESTROY' }}
+    environment: ${{ github.event.inputs.environment }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v2
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+          
+      - name: Terraform Init
+        working-directory: environments/${{ github.event.inputs.environment }}
+        run: terraform init
+        
+      - name: Terraform Plan Destroy
+        working-directory: environments/${{ github.event.inputs.environment }}
+        run: terraform plan -destroy -out=destroy.tfplan
+        
+      - name: Upload Plan Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: terraform-destroy-plan-${{ github.event.inputs.environment }}
+          path: environments/${{ github.event.inputs.environment }}/destroy.tfplan
+          retention-days: 1
+
+  terraform-destroy:
+    name: Terraform Destroy
+    needs: terraform-plan-destroy
+    runs-on: ubuntu-latest
+    environment: ${{ github.event.inputs.environment }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v2
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+          
+      - name: Terraform Init
+        working-directory: environments/${{ github.event.inputs.environment }}
+        run: terraform init
+        
+      - name: Download Plan Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: terraform-destroy-plan-${{ github.event.inputs.environment }}
+          path: environments/${{ github.event.inputs.environment }}
+        
+      # Destroying resources in reverse order compared to creation
+      - name: Destroy remaining resources first
+        working-directory: environments/${{ github.event.inputs.environment }}
+        run: |
+          # Remove the specific targets that we'll destroy separately later
+          terraform destroy -auto-approve \
+            -target="!module.monitoring.helm_release.kube_prometheus_stack" \
+            -target="!module.monitoring.null_resource.wait_for_crds" \
+            -target="!module.eks_aws_auth" \
+            -target="!module.eks" \
+            -target="!module.vpc"
+        continue-on-error: true
+
+      - name: Destroy Monitoring Resources
+        working-directory: environments/${{ github.event.inputs.environment }}
+        run: terraform destroy -target=module.monitoring -auto-approve
+        continue-on-error: true
+
+      - name: Destroy EKS Auth Configuration
+        working-directory: environments/${{ github.event.inputs.environment }}
+        run: terraform destroy -target=module.eks_aws_auth -auto-approve
+        continue-on-error: true
+        
+      - name: Destroy EKS Cluster
+        working-directory: environments/${{ github.event.inputs.environment }}
+        run: terraform destroy -target=module.eks -auto-approve
+        continue-on-error: true
+        
+      - name: Destroy VPC
+        working-directory: environments/${{ github.event.inputs.environment }}
+        run: terraform destroy -target=module.vpc -auto-approve
+        continue-on-error: true
+        
+      - name: Final Destroy Attempt for Any Remaining Resources
+        working-directory: environments/${{ github.event.inputs.environment }}
+        run: terraform destroy -auto-approve
+      
+      - name: Verify Destruction
+        working-directory: environments/${{ github.event.inputs.environment }}
+        run: |
+          echo "Infrastructure destruction complete for environment: ${{ github.event.inputs.environment }}"
