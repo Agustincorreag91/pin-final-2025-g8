@@ -9,9 +9,9 @@ cluster_name = "eks-demo-cluster"
 
 aws_auth_users = [
   {
-    userarn  = "arn:aws:iam::575108954687:root"  # Tu ARN
-    username = "root"                                 # Tu nombre de usuario
-    groups   = ["system:masters"]                         # Grupo con permisos de administrador
+    userarn  = "arn:aws:iam::575108954687:root" # Tu ARN
+    username = "root"                           # Tu nombre de usuario
+    groups   = ["system:masters"]               # Grupo con permisos de administrador
   }
 ]
 
